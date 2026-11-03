@@ -3,13 +3,13 @@ const NoticeBoard = () => {
 		<div className="notice-board">
 			<span className="notice-icon">📢</span>
 			<p className="notice-text">
-				<span className="notice-label">LATEST WORK:</span>
+				<span className="notice-label">Check out my new game:</span>
 				<a
-					href="/blog/a-guide-to-reducing-cognitive-load"
+					href="https://teqgame.softwaredesign.ing/"
 					target="_blank"
 					rel="noopener noreferrer"
 				>
-					A Guide to Reducing Cognitive Load
+					TEQ: That Escalated Quickly
 				</a>
 			</p>
 		</div>
