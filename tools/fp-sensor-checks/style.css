@@ -1,0 +1,15 @@
+body {
+  font-family: system-ui, sans-serif;
+  background: #f4f4f8;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  margin: 0;
+}
+main {
+  background: #fff;
+  padding: 2rem 3rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .1);
+}
+strong { color: #2a5bd7; }
