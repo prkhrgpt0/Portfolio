@@ -3,15 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>navigator.webdriver Check</title>
+  <title>Browser Automation Checks</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main>
-    <h1>navigator.webdriver Check</h1>
-    <p>Before delete: <strong id="before">...</strong></p>
-    <p>Delete returned: <strong id="deleted">...</strong></p>
-    <p>After delete: <strong id="after">...</strong></p>
+    <header>
+      <h1>Browser Automation Checks</h1>
+      <p class="sub">Detects automation / spoofing signals in this browser.</p>
+      <div id="summary" class="summary"></div>
+    </header>
+    <div id="results"></div>
   </main>
   <script src="script.js"></script>
 </body>
