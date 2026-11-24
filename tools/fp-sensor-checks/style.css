@@ -35,3 +35,11 @@ h1 { margin: 0; font-size: 1.5rem; }
 .bad, .badge.bad, .pill.bad { background: var(--bad-bg); color: var(--bad); }
 .info, .badge.info, .pill.info { background: var(--info-bg); color: var(--info); }
 .row.ok, .row.warn, .row.bad, .row.info { background: none; color: inherit; }
+
+.toggle { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 16px; color: var(--muted); font-size: .85rem; cursor: pointer; }
+.chip { display: inline-block; padding: 0 6px; border-radius: 4px; background: var(--line); color: var(--text); }
+.arrow { color: var(--muted); }
+.rest { margin-left: 8px; font-size: .72rem; font-family: system-ui, sans-serif; }
+.rest.yes { color: var(--ok); }
+.rest.no { color: var(--bad); }
+.hide-ok .row[data-status="ok"], .hide-ok .row[data-status="info"] { display: none; }
