@@ -6,6 +6,37 @@ const isNative = fn =>
   typeof fn === "function" && /\[native code\]/.test(Function.prototype.toString.call(fn));
 const tryDo = (fn, fallback = "error") => { try { return fn(); } catch (e) { return fallback; } };
 
+/* ---------- 0. Error stack ---------- */
+function checkErrorStack() {
+  const g = group("new Error(\"sample error\").stack", "Stack-trace shape exposes automation harnesses");
+  const stack = tryDo(() => new Error("sample error").stack, null);
+
+  const raw = typeof stack === "string" ? stack : String(stack ?? "");
+  row(g, "Actual stack", raw || "(empty)", raw ? "info" : "bad",
+    raw ? "" : "No stack trace: stripped by the environment.");
+
+  const lines = raw.split("\n");
+  const first = lines[0] || "";
+  row(g, "First line", first, first === "Error: sample error" ? "ok" : "bad",
+    first === "Error: sample error" ? "" : "Expected 'Error: sample error'.");
+
+  const frames = lines.slice(1).filter(l => /^\s+at\s/.test(l));
+  row(g, "Frame count", frames.length, frames.length ? "ok" : "bad",
+    frames.length ? "" : "No frames: stack may be faked or suppressed.");
+
+  const markers = ["puppeteer", "playwright", "selenium", "webdriver", "phantom", "nightmare",
+    "__puppeteer_evaluation_script__", "__playwright_evaluation_script__", "EvaluationScript",
+    "isolated world", "Automation"];
+  const hits = markers.filter(m => raw.toLowerCase().includes(m.toLowerCase()));
+  row(g, "Automation markers", hits.join(", ") || "none", hits.length ? "bad" : "ok",
+    hits.length ? "Injected harness frames are visible in the stack." : "");
+
+  row(g, "Correct value", "Error: sample error\n    at <anonymous>:1:9", "info",
+    "Real page script: a plain file/URL frame with line and column.");
+  row(g, "Bad value", "Error: sample error\n    at __puppeteer_evaluation_script__:1:9", "info",
+    "Automation: the injected evaluation frame names the harness.");
+}
+
 /* ---------- 1. navigator.webdriver ---------- */
 function checkWebdriver() {
   const g = group("navigator.webdriver", "Value, deletion attempt and prototype integrity");
@@ -678,6 +709,7 @@ document.getElementById("onlyIssues").addEventListener("change", e =>
   document.getElementById("results").classList.toggle("hide-ok", e.target.checked));
 
 (async () => {
+  checkErrorStack();
   checkWebdriver();
   checkPlugins();
   checkChrome();
