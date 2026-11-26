@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>Stack Viewer</title>
+	</head>
+	<body>
+		<h1>Stack Viewer</h1>
+		<button onclick="captureStack()">Test normal browser call</button>
+		<pre id="output" style="white-space: pre-wrap; overflow-wrap: anywhere">
+ Waiting for a call…
+   </pre
+		>
+
+		<script>
+			window.captureStack = function () {
+				const stack = new Error("Captured caller stack").stack;
+				document.getElementById("output").textContent = stack;
+			};
+		</script>
+	</body>
+</html>

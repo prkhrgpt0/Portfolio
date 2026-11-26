@@ -24,7 +24,7 @@ function checkErrorStack() {
   row(g, "Frame count", frames.length, frames.length ? "ok" : "bad",
     frames.length ? "" : "No frames: stack may be faked or suppressed.");
 
-  const markers = ["puppeteer", "playwright", "selenium", "webdriver", "phantom", "nightmare",
+  const markers = ["pptr:", "puppeteer", "playwright", "selenium", "webdriver", "phantom", "nightmare",
     "__puppeteer_evaluation_script__", "__playwright_evaluation_script__", "EvaluationScript",
     "isolated world", "Automation"];
   const hits = markers.filter(m => raw.toLowerCase().includes(m.toLowerCase()));
@@ -33,8 +33,8 @@ function checkErrorStack() {
 
   row(g, "Correct value", "Error: sample error\n    at <anonymous>:1:9", "info",
     "Real page script: a plain file/URL frame with line and column.");
-  row(g, "Bad value", "Error: sample error\n    at __puppeteer_evaluation_script__:1:9", "info",
-    "Automation: the injected evaluation frame names the harness.");
+  row(g, "Bad value", "Error: sample error\n    at pptr:evaluate (pptr:evaluate:1:15)", "info",
+    "Puppeteer: frames are prefixed with the pptr: marker.");
 }
 
 /* ---------- 1. navigator.webdriver ---------- */
