@@ -1,17 +1,20 @@
 <!doctype html>
 <html>
 	<body>
-		<pre id="“output”">Waiting for a createElement call...</pre>
+		<pre id="output">Waiting for a createElement call...</pre>
 
 		<script>
 			const original = document.createElement;
 
 			document.createElement = function (...args) {
-			  window.capturedStack = new Error(“Website captured caller”).stack;
+				window.capturedStack = new Error(
+					"Website captured caller",
+				).stack;
 
-			  document.getElementById(“output”).textContent = window.capturedStack;
+				document.getElementById("output").textContent =
+					window.capturedStack;
 
-			  return Reflect.apply(original, this, args);
+				return Reflect.apply(original, this, args);
 			};
 		</script>
 	</body>
