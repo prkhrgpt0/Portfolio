@@ -2,21 +2,133 @@
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<title>Stack Viewer</title>
-	</head>
-	<body>
-		<h1>Stack Viewer</h1>
-		<button onclick="captureStack()">Test normal browser call</button>
-		<pre id="output" style="white-space: pre-wrap; overflow-wrap: anywhere">
- Waiting for a call…
-   </pre
-		>
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" href="data:," />
+		<title>Website-side stack capture</title>
+
+		<style>
+			body {
+				max-width: 1000px;
+				margin: 32px auto;
+				padding: 0 20px;
+				font-family: system-ui, sans-serif;
+			}
+
+			button {
+				padding: 10px 16px;
+				cursor: pointer;
+			}
+
+			pre {
+				padding: 16px;
+				background: #f2f4f8;
+				border: 1px solid #ddd;
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+			}
+
+			#status {
+				font-weight: bold;
+			}
+		</style>
 
 		<script>
-			window.captureStack = function () {
-				const stack = new Error("Captured caller stack").stack;
-				document.getElementById("output").textContent = stack;
-			};
+			(() => {
+				const originalCreateElement = document.createElement;
+				const records = [];
+
+				// Exposes stacks already captured by website code.
+				window.stackDemo = {
+					records,
+					ready: false,
+				};
+
+				function render() {
+					const output = document.getElementById("output");
+					const status = document.getElementById("status");
+
+					if (!output || !status) return;
+
+					const marked = records.filter(
+						(record) => record.hasPptrMarker,
+					).length;
+
+					status.textContent = `Captured: ${records.length} | With pptr: marker: ${marked}`;
+
+					output.textContent = records
+						.map((record, index) => {
+							return [
+								`--- Capture ${index + 1} ---`,
+								`Time: ${record.time}`,
+								`pptr: marker: ${record.hasPptrMarker}`,
+								record.stack,
+							].join("\n");
+						})
+						.join("\n\n");
+				}
+
+				// This wrapper originates from YOUR website, not Puppeteer.
+				document.createElement = function (...args) {
+					const stack = String(
+						new Error("Website captured createElement caller")
+							.stack || "",
+					);
+
+					const record = {
+						time: new Date().toISOString(),
+						hasPptrMarker: stack.includes("pptr:"),
+						stack,
+					};
+
+					records.push(record);
+
+					if (records.length > 50) {
+						records.shift();
+					}
+
+					// Log a string, not an Error object.
+					console.log("[website-captured-stack]\n" + stack);
+
+					render();
+
+					// Preserve the original API's receiver and arguments.
+					return Reflect.apply(originalCreateElement, this, args);
+				};
+
+				document.addEventListener("DOMContentLoaded", () => {
+					document
+						.getElementById("normal-call")
+						.addEventListener(
+							"click",
+							function normalPageHandler() {
+								// Ordinary website-owned call chain.
+								const element = document.createElement("span");
+								element.textContent =
+									"Created by the page handler";
+							},
+						);
+
+					window.stackDemo.ready = true;
+					render();
+				});
+			})();
 		</script>
+	</head>
+
+	<body>
+		<h1>Website-side stack capture</h1>
+
+		<p>
+			The website wraps document.createElement and captures its callers.
+			No error needs to be thrown.
+		</p>
+
+		<button id="normal-call" type="button">
+			Test ordinary page handler
+		</button>
+
+		<p id="status">Waiting for initialization…</p>
+
+		<pre id="output"></pre>
 	</body>
 </html>
