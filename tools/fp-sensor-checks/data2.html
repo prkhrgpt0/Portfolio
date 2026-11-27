@@ -1,203 +1,506 @@
 <!doctype html>
-<html>
+<html lang="en">
 	<head>
 		<meta charset="utf-8" />
-		<title>API stack observer</title>
-
-		<!-- Keep this before your other website scripts. -->
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Browser API stack laboratory</title>
+		<link rel="icon" href="data:," />
 		<script>
 			(() => {
-				// Save references so the observer can avoid tracing itself.
-				const apply = Reflect.apply;
-				const define = Object.defineProperty;
-				const descriptors = Object.getOwnPropertyDescriptors;
+				"use strict";
+				// Diagnostic instrumentation, not a universal automation detector.
+				const cfg = {
+					maxRecords: 2000,
+					maxHooks: 15000,
+					autoProbe: true,
+				};
+				const A = Reflect.apply,
+					keys = Reflect.ownKeys;
+				const desc = Object.getOwnPropertyDescriptor;
+				const define = Object.defineProperty,
+					proto = Object.getPrototypeOf;
+				const ErrorCtor = Error,
+					ProxyCtor = Proxy;
 				const log = console.log.bind(console);
-				const getById = document.getElementById.bind(document);
-				const interval = window.setInterval.bind(window);
-				const StackError = Error;
-
-				const records = [];
-				const installed = [];
-				const skipped = [];
-				const limit = 1000;
-
-				let recording = false;
-				let ignoredAfterLimit = 0;
-
-				const state = (window.apiTrace = {
-					records,
-					installed,
-					skipped,
-					enabled: true,
-				});
-
-				function record(api) {
-					if (!state.enabled || recording) return;
-
-					if (records.length >= limit) {
-						ignoredAfterLimit++;
-						return;
-					}
-
-					recording = true;
-
+				const stringify = JSON.stringify.bind(JSON);
+				const timer = setInterval.bind(window);
+				const lookup = document.getElementById.bind(document);
+				const on = document.addEventListener.bind(document);
+				const records = [],
+					inventory = [],
+					installed = [],
+					skips = [],
+					undo = [];
+				let busy = false,
+					enabled = false,
+					phase = "installation",
+					probeName = null;
+				let dropped = 0,
+					counter = 0;
+				const seen = new WeakSet();
+				const core = new Set(
+					"Object Function Array String Number Boolean BigInt Symbol Date RegExp Error EvalError RangeError ReferenceError SyntaxError TypeError URIError AggregateError Promise Map Set WeakMap WeakSet WeakRef FinalizationRegistry ArrayBuffer SharedArrayBuffer DataView Int8Array Uint8Array Uint8ClampedArray Int16Array Uint16Array Int32Array Uint32Array Float16Array Float32Array Float64Array BigInt64Array BigUint64Array Proxy Intl WebAssembly JSON Math Reflect Atomics Iterator AsyncIterator".split(
+						" ",
+					),
+				);
+				const blocked = new Set([
+					Object.prototype,
+					Function.prototype,
+					Array.prototype,
+				]);
+				for (const name of core) {
+					const d = desc(window, name);
+					if (d && d.value && d.value.prototype)
+						blocked.add(d.value.prototype);
+				}
+				const special = new Set(["constructor", "__proto__"]);
+				const excludedGlobals = new Set([
+					"eval",
+					"alert",
+					"confirm",
+					"prompt",
+					"apiLab",
+				]);
+				function errorText(e) {
 					try {
-						const stack = String(
-							new StackError("Intercepted: " + api).stack || "",
-						);
-
-						const entry = {
-							number: records.length + 1,
-							api,
-							pptrMarker: stack.includes("pptr:"),
-							stack,
-						};
-
-						records.push(entry);
-
-						// Print strings, not Error objects.
-						log(
-							"[api-trace] #" +
-								entry.number +
-								" " +
-								api +
-								" | pptr: " +
-								entry.pptrMarker +
-								"\n" +
-								stack,
-						);
+						return String((e && e.stack) || e);
 					} catch (_) {
-						// Observer failures must not prevent the original call.
-					} finally {
-						recording = false;
+						return "[unreadable error]";
 					}
 				}
-
-				function wrapMethods(target, label, onlyNames) {
-					if (!target) return;
-
-					const properties = descriptors(target);
-
-					for (const [name, descriptor] of Object.entries(
-						properties,
-					)) {
-						if (name === "constructor") continue;
-						if (onlyNames && !onlyNames.includes(name)) continue;
-
-						// Methods only: do not invoke or replace property getters.
-						if (typeof descriptor.value !== "function") continue;
-
-						const api = label + "." + name;
-						const original = descriptor.value;
-
+				function emit(kind, api, stack, detail) {
+					if (!enabled || busy) return;
+					if (records.length >= cfg.maxRecords) {
+						dropped++;
+						return;
+					}
+					busy = true;
+					try {
+						const entry = {
+							number: ++counter,
+							phase,
+							probe: probeName,
+							kind,
+							api,
+							pptrMarker: /pptr:/i.test(stack || ""),
+							stack: stack || "",
+							detail: detail || "",
+						};
+						records.push(entry);
+						log("[api-lab] " + stringify(entry));
+					} finally {
+						busy = false;
+					}
+				}
+				function stack(api) {
+					return errorText(new ErrorCtor("Observed: " + api));
+				}
+				function wrapped(fn, api) {
+					// Proxy preserves the original callable/constructible nature.
+					return new ProxyCtor(fn, {
+						apply(target, receiver, args) {
+							if (!enabled || busy)
+								return A(target, receiver, args);
+							if (records.length < cfg.maxRecords)
+								emit("call", api, stack(api));
+							else dropped++;
+							try {
+								return A(target, receiver, args);
+							} catch (e) {
+								// Preserve the actual thrown error, including deeper frames if present.
+								emit("thrown-error", api, errorText(e));
+								throw e;
+							}
+						},
+					});
+				}
+				function scan(target, label, filter) {
+					if (!target || seen.has(target) || blocked.has(target))
+						return;
+					seen.add(target);
+					let names;
+					try {
+						names = keys(target);
+					} catch (e) {
+						skips.push(label + ": discovery failed");
+						return;
+					}
+					for (const key of names) {
+						if (special.has(key) || (filter && !filter(key)))
+							continue;
+						let d;
 						try {
-							define(target, name, {
-								...descriptor,
-								value: function (...args) {
-									record(api);
-									return apply(original, this, args);
-								},
+							d = desc(target, key);
+						} catch (_) {
+							continue;
+						}
+						if (!d) continue;
+						const name = label + "." + String(key);
+						const kinds = [];
+						if (typeof d.value === "function") kinds.push("method");
+						if (typeof d.get === "function") kinds.push("getter");
+						if (typeof d.set === "function") kinds.push("setter");
+						if (!kinds.length) continue;
+						inventory.push({
+							api: name,
+							kinds,
+							configurable: d.configurable,
+						});
+						if (installed.length >= cfg.maxHooks) {
+							skips.push(name + ": hook cap");
+							continue;
+						}
+						if (!d.configurable && !("value" in d && d.writable)) {
+							skips.push(name + ": property cannot be replaced");
+							continue;
+						}
+						const replacement = { ...d };
+						if (typeof d.value === "function")
+							replacement.value = wrapped(d.value, name);
+						if (typeof d.get === "function")
+							replacement.get = wrapped(d.get, name + " [get]");
+						if (typeof d.set === "function")
+							replacement.set = wrapped(d.set, name + " [set]");
+						try {
+							define(target, key, replacement);
+							undo.push({
+								target,
+								key,
+								original: d,
+								replacement,
 							});
-
-							installed.push(api);
-						} catch (error) {
-							skipped.push(api + ": " + String(error));
+							installed.push(name);
+						} catch (e) {
+							skips.push(name + ": " + String(e));
 						}
 					}
 				}
-
-				// Wrap methods declared directly on these prototypes.
-				const targets = [
-					["Document", window.Document],
-					["Element", window.Element],
-					["HTMLElement", window.HTMLElement],
-					["Node", window.Node],
-					["DocumentFragment", window.DocumentFragment],
-					["EventTarget", window.EventTarget],
-					["Range", window.Range],
-					["DOMParser", window.DOMParser],
-					["Navigator", window.Navigator],
-					["Permissions", window.Permissions],
-					["Storage", window.Storage],
-					["XMLHttpRequest", window.XMLHttpRequest],
-					["HTMLCanvasElement", window.HTMLCanvasElement],
-				];
-
-				for (const [name, constructor] of targets) {
-					if (constructor) {
-						wrapMethods(constructor.prototype, name + ".prototype");
+				// Snapshot exposed constructors before changing APIs. Do not evaluate global getters.
+				const globals = keys(window).map((k) => [k, desc(window, k)]);
+				const targets = [];
+				for (const [name, d] of globals) {
+					if (
+						typeof name !== "string" ||
+						core.has(name) ||
+						!d ||
+						typeof d.value !== "function"
+					)
+						continue;
+					const pd = desc(d.value, "prototype");
+					if (pd && pd.value && typeof pd.value === "object") {
+						targets.push([d.value, name + " [static]"]);
+						let p = pd.value,
+							depth = 0;
+						while (p && !blocked.has(p) && depth < 12) {
+							targets.push([
+								p,
+								name +
+									".prototype" +
+									(depth ? " [ancestor " + depth + "]" : ""),
+							]);
+							p = proto(p);
+							depth++;
+						}
 					}
 				}
-
-				// Selected global functions; avoid wrapping constructors and eval.
-				wrapMethods(window, "window", [
-					"fetch",
-					"getComputedStyle",
-					"matchMedia",
-					"setTimeout",
-					"setInterval",
-					"requestAnimationFrame",
-					"queueMicrotask",
-					"postMessage",
-				]);
-
-				log("[api-trace] Installed hooks:\n" + installed.join("\n"));
-
-				if (skipped.length) {
-					log("[api-trace] Skipped hooks:\n" + skipped.join("\n"));
+				// Include instance-own overrides, such as navigator getters patched by preload scripts.
+				for (const [name, obj] of [
+					["document", document],
+					["navigator", navigator],
+					["screen", screen],
+					["performance", performance],
+				]) {
+					targets.push([obj, name]);
+					let p = proto(obj),
+						depth = 0;
+					while (p && !blocked.has(p) && depth < 12) {
+						targets.push([p, name + " [prototype " + depth + "]"]);
+						p = proto(p);
+						depth++;
+					}
 				}
-
-				// Use saved references and suppress observer-generated activity.
-				interval(() => {
-					recording = true;
-
+				for (const [obj, name] of targets) scan(obj, name);
+				// Non-constructor global functions. Global accessors and core JS machinery excluded.
+				scan(window, "window", (key) => {
+					if (
+						typeof key !== "string" ||
+						core.has(key) ||
+						excludedGlobals.has(key)
+					)
+						return false;
+					const d = desc(window, key);
+					return (
+						d &&
+						typeof d.value === "function" &&
+						!desc(d.value, "prototype")
+					);
+				});
+				function probe(label, fn) {
+					const previous = probeName;
+					probeName = label;
 					try {
-						const output = getById("output");
-						const status = getById("status");
-
-						if (!output || !status) return;
-
+						fn();
+						emit(
+							"probe-complete",
+							label,
+							"",
+							"Completion is not an automation finding.",
+						);
+					} catch (e) {
+						emit("probe-error", label, errorText(e));
+					} finally {
+						probeName = previous;
+					}
+				}
+				function coercible(label, value) {
+					return {
+						[Symbol.toPrimitive]() {
+							// Capture while argument conversion is executing INSIDE the API call.
+							emit("coercion-stack", label, stack(label));
+							return value;
+						},
+					};
+				}
+				function runProbes() {
+					phase = "website-active-probe";
+					try {
+						const selectors = [
+							document,
+							document.createElement("div"),
+							document.createDocumentFragment(),
+						];
+						for (let i = 0; i < selectors.length; i++) {
+							const obj = selectors[i];
+							for (const name of [
+								"querySelector",
+								"querySelectorAll",
+							]) {
+								probe(name + " coercion target " + i, () =>
+									obj[name](coercible(name, "html")),
+								);
+								probe(
+									name + " invalid selector target " + i,
+									() => obj[name]("["),
+								);
+							}
+						}
+						probe("createElement coercion", () =>
+							document.createElement(
+								coercible("tag conversion", "div"),
+							),
+						);
+						probe("createTextNode coercion", () =>
+							document.createTextNode(
+								coercible("text conversion", "probe"),
+							),
+						);
+						probe("getElementById coercion", () =>
+							document.getElementById(
+								coercible("id conversion", "missing-probe-id"),
+							),
+						);
+						probe("getElementsByTagName coercion", () =>
+							document.getElementsByTagName(
+								coercible("tag lookup conversion", "div"),
+							),
+						);
+						probe(
+							"URL coercion",
+							() =>
+								new URL(
+									coercible(
+										"URL conversion",
+										"https://example.invalid/",
+									),
+								),
+						);
+						// Parse-only operation: no request to that URL is sent.
+						probe("matchMedia coercion", () =>
+							matchMedia(
+								coercible(
+									"media conversion",
+									"(min-width: 1px)",
+								),
+							),
+						);
+						for (const key of [
+							"webdriver",
+							"userAgent",
+							"platform",
+							"languages",
+							"language",
+							"hardwareConcurrency",
+							"deviceMemory",
+							"plugins",
+							"mimeTypes",
+							"vendor",
+							"maxTouchPoints",
+						]) {
+							probe("navigator." + key + " read", () => {
+								void navigator[key];
+							});
+							let p = navigator,
+								d;
+							while (p && !(d = desc(p, key))) p = proto(p);
+							if (d && typeof d.get === "function") {
+								probe(
+									"navigator." + key + " invalid receiver",
+									() => A(d.get, {}, []),
+								);
+							}
+						}
+						probe("layout read", () =>
+							document.documentElement.getBoundingClientRect(),
+						);
+						probe(
+							"computed style read",
+							() =>
+								getComputedStyle(document.documentElement)
+									.display,
+						);
+					} finally {
+						phase = "passive";
+						probeName = null;
+					}
+				}
+				function restore() {
+					enabled = false;
+					for (let i = undo.length - 1; i >= 0; i--) {
+						const u = undo[i];
+						try {
+							const now = desc(u.target, u.key),
+								r = u.replacement;
+							if (
+								now &&
+								now.value === r.value &&
+								now.get === r.get &&
+								now.set === r.set
+							)
+								define(u.target, u.key, u.original);
+						} catch (_) {}
+					}
+				}
+				window.apiLab = {
+					records,
+					inventory,
+					installed,
+					skips,
+					runProbes,
+					restore,
+					stop() {
+						enabled = false;
+					},
+					start() {
+						enabled = true;
+					},
+					exportJSON() {
+						return stringify(
+							{
+								config: cfg,
+								inventory,
+								installed,
+								skips,
+								dropped,
+								records,
+							},
+							null,
+							2,
+						);
+					},
+				};
+				phase = "passive";
+				enabled = true;
+				log(
+					"[api-lab] " +
+						installed.length +
+						" properties hooked; " +
+						skips.length +
+						" skipped. Hook counts are NOT injected-function counts.",
+				);
+				on(
+					"DOMContentLoaded",
+					() => {
+						if (cfg.autoProbe) runProbes();
+						log(
+							"[api-lab] Active probes complete. Their calls are labeled website-active-probe; this is not evidence of injected activity.",
+						);
+					},
+					{ once: true },
+				);
+				timer(() => {
+					busy = true;
+					try {
+						const status = lookup("status"),
+							output = lookup("output");
+						if (!status || !output) return;
 						status.textContent =
 							installed.length +
-							" hooks | " +
+							" hooked properties | " +
 							records.length +
-							" captured calls | " +
-							ignoredAfterLimit +
-							" calls ignored after limit";
-
-						// Keep the UI manageable; all retained records are in apiTrace.
+							" records | " +
+							records.filter((r) => r.pptrMarker).length +
+							" records containing pptr: | " +
+							dropped +
+							" dropped";
 						output.textContent = records
 							.slice(-100)
 							.map(
-								(entry) =>
+								(r) =>
 									"#" +
-									entry.number +
+									r.number +
+									" [" +
+									r.phase +
+									"] " +
+									r.kind +
 									" " +
-									entry.api +
-									"\npptr: marker: " +
-									entry.pptrMarker +
+									r.api +
+									(r.probe ? "\nProbe: " + r.probe : "") +
 									"\n" +
-									entry.stack,
+									(r.stack || r.detail),
 							)
 							.join("\n\n");
 					} finally {
-						recording = false;
+						busy = false;
 					}
 				}, 1000);
 			})();
 		</script>
+		<style>
+			body {
+				font: 15px system-ui;
+				margin: 24px;
+			}
+			pre {
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+				background: #f5f5f5;
+				padding: 16px;
+			}
+			strong {
+				color: #8b2600;
+			}
+		</style>
 	</head>
-
 	<body>
-		<h1>API stack observer</h1>
-		<p id="status">Observer installed. Waiting for activity…</p>
+		<h1>Browser API stack laboratory</h1>
 		<p>
-			Latest 100 calls below. Full retained records:
-			window.apiTrace.records
+			<strong
+				>Diagnostic page only. These hooks alter browser behavior and
+				timing.</strong
+			>
 		</p>
-		<pre
-			id="output"
-			style="white-space: pre-wrap; overflow-wrap: anywhere"
-		></pre>
+		<p>
+			Hooks and active-probe calls are not injected-function detections.
+			Compare source frames across clean and modified runs.
+		</p>
+		<p id="status">Installing...</p>
+		<p>
+			Latest 100 records below. Full retained data:
+			<code>window.apiLab.records</code>. Export:
+			<code>window.apiLab.exportJSON()</code>. Stop:
+			<code>window.apiLab.stop()</code>. Restore:
+			<code>window.apiLab.restore()</code>.
+		</p>
+		<pre id="output"></pre>
 	</body>
 </html>
