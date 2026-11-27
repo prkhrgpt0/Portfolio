@@ -2,202 +2,137 @@
 <html>
 	<head>
 		<meta charset="utf-8" />
-		<title>API stack observer</title>
+		<title>Active stack probes</title>
+	</head>
+	<body>
+		<pre id="output">Running...</pre>
 
-		<!-- Keep this before your other website scripts. -->
 		<script>
 			(() => {
-				// Save references so the observer can avoid tracing itself.
-				const apply = Reflect.apply;
-				const define = Object.defineProperty;
-				const descriptors = Object.getOwnPropertyDescriptors;
-				const log = console.log.bind(console);
-				const getById = document.getElementById.bind(document);
-				const interval = window.setInterval.bind(window);
-				const StackError = Error;
+				const results = [];
+				const oldLimit = Error.stackTraceLimit;
+				Error.stackTraceLimit = 40;
 
-				const records = [];
-				const installed = [];
-				const skipped = [];
-				const limit = 1000;
+				function save(probe, kind, stack) {
+					stack = String(stack || "");
 
-				let recording = false;
-				let ignoredAfterLimit = 0;
-
-				const state = (window.apiTrace = {
-					records,
-					installed,
-					skipped,
-					enabled: true,
-				});
-
-				function record(api) {
-					if (!state.enabled || recording) return;
-
-					if (records.length >= limit) {
-						ignoredAfterLimit++;
-						return;
-					}
-
-					recording = true;
-
-					try {
-						const stack = String(
-							new StackError("Intercepted: " + api).stack || "",
-						);
-
-						const entry = {
-							number: records.length + 1,
-							api,
-							pptrMarker: stack.includes("pptr:"),
-							stack,
-						};
-
-						records.push(entry);
-
-						// Print strings, not Error objects.
-						log(
-							"[api-trace] #" +
-								entry.number +
-								" " +
-								api +
-								" | pptr: " +
-								entry.pptrMarker +
-								"\n" +
-								stack,
-						);
-					} catch (_) {
-						// Observer failures must not prevent the original call.
-					} finally {
-						recording = false;
-					}
+					results.push({
+						probe,
+						kind,
+						pptrMarker: stack.includes("pptr:"),
+						stack,
+					});
 				}
 
-				function wrapMethods(target, label, onlyNames) {
-					if (!target) return;
+				function run(probe, fn) {
+					const before = results.length;
 
-					const properties = descriptors(target);
+					try {
+						fn();
 
-					for (const [name, descriptor] of Object.entries(
-						properties,
-					)) {
-						if (name === "constructor") continue;
-						if (onlyNames && !onlyNames.includes(name)) continue;
-
-						// Methods only: do not invoke or replace property getters.
-						if (typeof descriptor.value !== "function") continue;
-
-						const api = label + "." + name;
-						const original = descriptor.value;
-
-						try {
-							define(target, name, {
-								...descriptor,
-								value: function (...args) {
-									record(api);
-									return apply(original, this, args);
-								},
-							});
-
-							installed.push(api);
-						} catch (error) {
-							skipped.push(api + ": " + String(error));
+						if (results.length === before) {
+							save(
+								probe,
+								"Completed without a captured stack",
+								"",
+							);
 						}
+					} catch (error) {
+						// Preserve the actual exception from the tested implementation.
+						save(
+							probe,
+							"Caught exception",
+							error?.stack || String(error),
+						);
 					}
 				}
 
-				// Wrap methods declared directly on these prototypes.
-				const targets = [
-					["Document", window.Document],
-					["Element", window.Element],
-					["HTMLElement", window.HTMLElement],
-					["Node", window.Node],
-					["DocumentFragment", window.DocumentFragment],
-					["EventTarget", window.EventTarget],
-					["Range", window.Range],
-					["DOMParser", window.DOMParser],
-					["Navigator", window.Navigator],
-					["Permissions", window.Permissions],
-					["Storage", window.Storage],
-					["XMLHttpRequest", window.XMLHttpRequest],
-					["HTMLCanvasElement", window.HTMLCanvasElement],
-				];
+				function argumentProbe(probe, value) {
+					return {
+						[Symbol.toPrimitive]() {
+							save(
+								probe,
+								"Captured during argument conversion",
+								new Error("Argument conversion").stack,
+							);
 
-				for (const [name, constructor] of targets) {
-					if (constructor) {
-						wrapMethods(constructor.prototype, name + ".prototype");
+							return value;
+						},
+					};
+				}
+
+				function findGetter(object, name) {
+					for (
+						let current = object;
+						current;
+						current = Object.getPrototypeOf(current)
+					) {
+						const descriptor = Object.getOwnPropertyDescriptor(
+							current,
+							name,
+						);
+
+						if (descriptor) return descriptor.get;
 					}
 				}
 
-				// Selected global functions; avoid wrapping constructors and eval.
-				wrapMethods(window, "window", [
-					"fetch",
-					"getComputedStyle",
-					"matchMedia",
-					"setTimeout",
-					"setInterval",
-					"requestAnimationFrame",
-					"queueMicrotask",
-					"postMessage",
-				]);
+				try {
+					// Capture while the API processes our argument.
+					run("querySelector: conversion", () => {
+						document.querySelector(
+							argumentProbe("querySelector: conversion", "html"),
+						);
+					});
 
-				log("[api-trace] Installed hooks:\n" + installed.join("\n"));
+					run("createElement: conversion", () => {
+						document.createElement(
+							argumentProbe("createElement: conversion", "div"),
+						);
+					});
 
-				if (skipped.length) {
-					log("[api-trace] Skipped hooks:\n" + skipped.join("\n"));
+					// Exercise error paths in the installed implementations.
+					run("querySelector: invalid selector", () => {
+						document.querySelector("[");
+					});
+
+					run("querySelector: invalid receiver", () => {
+						Reflect.apply(document.querySelector, {}, ["html"]);
+					});
+
+					run("Function.toString: invalid receiver", () => {
+						Reflect.apply(Function.prototype.toString, {}, []);
+					});
+
+					// Exercise getter error paths without changing navigator.
+					for (const name of [
+						"webdriver",
+						"userAgent",
+						"languages",
+						"plugins",
+					]) {
+						run("navigator." + name + ": invalid receiver", () => {
+							const getter = findGetter(navigator, name);
+
+							if (!getter) {
+								save(name, "No getter found", "");
+								return;
+							}
+
+							Reflect.apply(getter, {}, []);
+						});
+					}
+				} finally {
+					Error.stackTraceLimit = oldLimit;
 				}
 
-				// Use saved references and suppress observer-generated activity.
-				interval(() => {
-					recording = true;
+				window.activeStackResults = results;
 
-					try {
-						const output = getById("output");
-						const status = getById("status");
+				const text = JSON.stringify(results, null, 2);
+				document.getElementById("output").textContent = text;
 
-						if (!output || !status) return;
-
-						status.textContent =
-							installed.length +
-							" hooks | " +
-							records.length +
-							" captured calls | " +
-							ignoredAfterLimit +
-							" calls ignored after limit";
-
-						// Keep the UI manageable; all retained records are in apiTrace.
-						output.textContent = records
-							.slice(-100)
-							.map(
-								(entry) =>
-									"#" +
-									entry.number +
-									" " +
-									entry.api +
-									"\npptr: marker: " +
-									entry.pptrMarker +
-									"\n" +
-									entry.stack,
-							)
-							.join("\n\n");
-					} finally {
-						recording = false;
-					}
-				}, 1000);
+				// Log a string rather than an Error object.
+				console.log("[active-stack-probes]\n" + text);
 			})();
 		</script>
-	</head>
-
-	<body>
-		<h1>API stack observer</h1>
-		<p id="status">Observer installed. Waiting for activity…</p>
-		<p>
-			Latest 100 calls below. Full retained records:
-			window.apiTrace.records
-		</p>
-		<pre
-			id="output"
-			style="white-space: pre-wrap; overflow-wrap: anywhere"
-		></pre>
 	</body>
 </html>
