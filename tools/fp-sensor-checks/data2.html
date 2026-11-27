@@ -1,0 +1,203 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8" />
+		<title>API stack observer</title>
+
+		<!-- Keep this before your other website scripts. -->
+		<script>
+			(() => {
+				// Save references so the observer can avoid tracing itself.
+				const apply = Reflect.apply;
+				const define = Object.defineProperty;
+				const descriptors = Object.getOwnPropertyDescriptors;
+				const log = console.log.bind(console);
+				const getById = document.getElementById.bind(document);
+				const interval = window.setInterval.bind(window);
+				const StackError = Error;
+
+				const records = [];
+				const installed = [];
+				const skipped = [];
+				const limit = 1000;
+
+				let recording = false;
+				let ignoredAfterLimit = 0;
+
+				const state = (window.apiTrace = {
+					records,
+					installed,
+					skipped,
+					enabled: true,
+				});
+
+				function record(api) {
+					if (!state.enabled || recording) return;
+
+					if (records.length >= limit) {
+						ignoredAfterLimit++;
+						return;
+					}
+
+					recording = true;
+
+					try {
+						const stack = String(
+							new StackError("Intercepted: " + api).stack || "",
+						);
+
+						const entry = {
+							number: records.length + 1,
+							api,
+							pptrMarker: stack.includes("pptr:"),
+							stack,
+						};
+
+						records.push(entry);
+
+						// Print strings, not Error objects.
+						log(
+							"[api-trace] #" +
+								entry.number +
+								" " +
+								api +
+								" | pptr: " +
+								entry.pptrMarker +
+								"\n" +
+								stack,
+						);
+					} catch (_) {
+						// Observer failures must not prevent the original call.
+					} finally {
+						recording = false;
+					}
+				}
+
+				function wrapMethods(target, label, onlyNames) {
+					if (!target) return;
+
+					const properties = descriptors(target);
+
+					for (const [name, descriptor] of Object.entries(
+						properties,
+					)) {
+						if (name === "constructor") continue;
+						if (onlyNames && !onlyNames.includes(name)) continue;
+
+						// Methods only: do not invoke or replace property getters.
+						if (typeof descriptor.value !== "function") continue;
+
+						const api = label + "." + name;
+						const original = descriptor.value;
+
+						try {
+							define(target, name, {
+								...descriptor,
+								value: function (...args) {
+									record(api);
+									return apply(original, this, args);
+								},
+							});
+
+							installed.push(api);
+						} catch (error) {
+							skipped.push(api + ": " + String(error));
+						}
+					}
+				}
+
+				// Wrap methods declared directly on these prototypes.
+				const targets = [
+					["Document", window.Document],
+					["Element", window.Element],
+					["HTMLElement", window.HTMLElement],
+					["Node", window.Node],
+					["DocumentFragment", window.DocumentFragment],
+					["EventTarget", window.EventTarget],
+					["Range", window.Range],
+					["DOMParser", window.DOMParser],
+					["Navigator", window.Navigator],
+					["Permissions", window.Permissions],
+					["Storage", window.Storage],
+					["XMLHttpRequest", window.XMLHttpRequest],
+					["HTMLCanvasElement", window.HTMLCanvasElement],
+				];
+
+				for (const [name, constructor] of targets) {
+					if (constructor) {
+						wrapMethods(constructor.prototype, name + ".prototype");
+					}
+				}
+
+				// Selected global functions; avoid wrapping constructors and eval.
+				wrapMethods(window, "window", [
+					"fetch",
+					"getComputedStyle",
+					"matchMedia",
+					"setTimeout",
+					"setInterval",
+					"requestAnimationFrame",
+					"queueMicrotask",
+					"postMessage",
+				]);
+
+				log("[api-trace] Installed hooks:\n" + installed.join("\n"));
+
+				if (skipped.length) {
+					log("[api-trace] Skipped hooks:\n" + skipped.join("\n"));
+				}
+
+				// Use saved references and suppress observer-generated activity.
+				interval(() => {
+					recording = true;
+
+					try {
+						const output = getById("output");
+						const status = getById("status");
+
+						if (!output || !status) return;
+
+						status.textContent =
+							installed.length +
+							" hooks | " +
+							records.length +
+							" captured calls | " +
+							ignoredAfterLimit +
+							" calls ignored after limit";
+
+						// Keep the UI manageable; all retained records are in apiTrace.
+						output.textContent = records
+							.slice(-100)
+							.map(
+								(entry) =>
+									"#" +
+									entry.number +
+									" " +
+									entry.api +
+									"\npptr: marker: " +
+									entry.pptrMarker +
+									"\n" +
+									entry.stack,
+							)
+							.join("\n\n");
+					} finally {
+						recording = false;
+					}
+				}, 1000);
+			})();
+		</script>
+	</head>
+
+	<body>
+		<h1>API stack observer</h1>
+		<p id="status">Observer installed. Waiting for activity…</p>
+		<p>
+			Latest 100 calls below. Full retained records:
+			window.apiTrace.records
+		</p>
+		<pre
+			id="output"
+			style="white-space: pre-wrap; overflow-wrap: anywhere"
+		></pre>
+	</body>
+</html>
